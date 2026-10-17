@@ -1,0 +1,79 @@
+services:
+
+  # ── MySQL 8.4 Database ───────────────────────────────────────────────────────
+  db:
+    image: mysql:8.4
+    container_name: notes_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE:      cloudnotes
+      MYSQL_USER:          cloudnotes_app
+      MYSQL_PASSWORD:      ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootsecret}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1",
+             "-u", "cloudnotes_app", "--password=${DB_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - notes_net
+
+  # ── Django Backend ───────────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: notes-backend:latest
+    container_name: notes_backend
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "3306"
+    depends_on:
+      db:
+        condition: service_healthy
+    command: >
+      sh -c "python manage.py migrate --noinput &&
+             gunicorn config.wsgi:application
+               --bind 0.0.0.0:8000
+               --workers 2
+               --timeout 60"
+    volumes:
+      - backend_static:/app/staticfiles
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - notes_net
+
+  # ── React Frontend + Nginx Gateway ───────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: notes-frontend:latest
+    container_name: notes_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - notes_net
+
+volumes:
+  db_data:
+  backend_static:
+
+networks:
+  notes_net:
+    driver: bridge
